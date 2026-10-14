@@ -1,18 +1,17 @@
 
 from functools import lru_cache
-from pathlib import Path
 
 import chromadb
 from sentence_transformers import SentenceTransformer
 
+from config import (
+    DB_DIR,
+    COLLECTION_NAME,
+    EMBEDDING_MODEL,
+    TOP_K,
+    MAX_DISTANCE,
+)
 from llm import generate_answer
-
-DB_DIR = Path("chroma_db")
-COLLECTION_NAME = "gas_safety_pdf"
-EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-
-TOP_K = 3
-MAX_DISTANCE = 0.65
 
 NOT_FOUND = (
     "I could not find this information in the provided documents."
@@ -21,17 +20,23 @@ NOT_FOUND = (
 
 @lru_cache(maxsize=1)
 def load_embeddings():
-    return SentenceTransformer(EMBEDDING_MODEL, device="cpu")
+    """Load the embedding model once."""
+    return SentenceTransformer(
+        EMBEDDING_MODEL,
+        device="cpu",
+    )
 
 
 @lru_cache(maxsize=1)
 def load_collection():
+    """Open the existing ChromaDB collection."""
     if not DB_DIR.exists():
         raise FileNotFoundError(
             "PDF database not found. Run: python ingest.py"
         )
 
     client = chromadb.PersistentClient(path=str(DB_DIR))
+
     return client.get_collection(
         name=COLLECTION_NAME,
         embedding_function=None,
@@ -39,22 +44,35 @@ def load_collection():
 
 
 def ask_gassafe(question: str) -> dict:
+    """Retrieve PDF passages and generate a grounded answer."""
     question = question.strip()
 
     if not question:
-        return {"answer": "Please enter a question.", "sources": []}
+        return {
+            "answer": "Please enter a question.",
+            "sources": [],
+        }
+
+    collection = load_collection()
+    document_count = collection.count()
+
+    if document_count == 0:
+        return {
+            "answer": NOT_FOUND,
+            "sources": [],
+        }
 
     model = load_embeddings()
-    collection = load_collection()
 
     question_embedding = model.encode(
         [question],
         normalize_embeddings=True,
+        show_progress_bar=False,
     ).tolist()
 
     results = collection.query(
         query_embeddings=question_embedding,
-        n_results=min(TOP_K, collection.count()),
+        n_results=min(TOP_K, document_count),
         include=["documents", "metadatas", "distances"],
     )
 
@@ -85,10 +103,12 @@ def ask_gassafe(question: str) -> dict:
         })
 
     if not context_parts:
-        return {"answer": NOT_FOUND, "sources": []}
+        return {
+            "answer": NOT_FOUND,
+            "sources": [],
+        }
 
     context = "\n\n---\n\n".join(context_parts)
-
     answer = generate_answer(question, context)
 
     return {
@@ -103,6 +123,9 @@ if __name__ == "__main__":
 
     print("\nAnswer:\n", result["answer"])
     print("\nSources:")
+
     for source in result["sources"]:
-        print(f"- {source['file']}, page {source['page']}")
+        print(
+            f"- {source['file']}, page {source['page']}"
+        )
   
