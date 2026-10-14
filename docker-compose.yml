@@ -1,0 +1,22 @@
+
+services:
+  gassafe-ai:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: gassafe-ai
+
+    ports:
+      - "127.0.0.1:8501:8501"
+
+    volumes:
+      - ./data/safety_manuals:/app/data/safety_manuals:ro
+      - ./models:/app/models
+      - ./chroma_db:/app/chroma_db
+
+    environment:
+      PYTHONUNBUFFERED: "1"
+
+    restart: unless-stopped
+  
