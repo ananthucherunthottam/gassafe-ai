@@ -30,6 +30,7 @@ jobs:
           python -m py_compile llm.py
           python -m py_compile ingest.py
           python -m py_compile rag.py
+          python -m py_compile tests/test_chunking.py
 
       - name: Validate requirements file
         run: |
@@ -53,12 +54,19 @@ jobs:
           }
 
           missing = required - packages
+
           if missing:
-              raise SystemExit(f"Missing dependencies: {sorted(missing)}")
+              raise SystemExit(
+                  f"Missing dependencies: {sorted(missing)}"
+              )
 
           print("All required dependency names are present.")
           PY
 
+      - name: Run PDF chunking tests
+        run: |
+          python -m unittest discover -s tests -p "test_*.py" -v
+
       - name: Validation complete
-        run: echo "GasSafe AI static checks passed."
-  
+        run: echo "GasSafe AI validation checks passed."
+        
