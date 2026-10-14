@@ -7,10 +7,8 @@ from unittest.mock import MagicMock
 
 def load_ask_gassafe():
     """
-    Load the RAG function without importing AI libraries.
-
-    Extracting the function allows us to test its
-    decision-making with mocked dependencies.
+    Load the RAG function without importing
+    heavyweight AI dependencies.
     """
     source_path = Path(__file__).resolve().parents[1] / "rag.py"
     source = source_path.read_text(encoding="utf-8")
@@ -23,15 +21,24 @@ def load_ask_gassafe():
         and node.name == "ask_gassafe"
     )
 
-    module = ast.Module(body=[function], type_ignores=[])
+    module = ast.Module(
+        body=[function],
+        type_ignores=[]
+    )
     ast.fix_missing_locations(module)
 
-    return compile(module, str(source_path), "exec")
+    return compile(
+        module,
+        str(source_path),
+        "exec"
+    )
 
 
 class TestRAGRetrieval(unittest.TestCase):
 
     def setUp(self):
+        """Prepare mocked dependencies for RAG testing."""
+
         self.collection = MagicMock()
         self.embedding_model = MagicMock()
 
@@ -57,18 +64,25 @@ class TestRAGRetrieval(unittest.TestCase):
         )
 
         self.namespace = {
+            "load_collection": lambda: self.collection,
             "get_collection": lambda: self.collection,
+            "load_embedding_model": lambda: self.embedding_model,
             "get_embedding_model": lambda: self.embedding_model,
             "generate_answer": self.generate_answer,
             "TOP_K": 3,
             "MAX_DISTANCE": 0.65,
         }
 
-        exec(load_ask_gassafe(), self.namespace)
+        exec(
+            load_ask_gassafe(),
+            self.namespace
+        )
+
         self.ask_gassafe = self.namespace["ask_gassafe"]
 
     def test_relevant_document_retrieval(self):
         """Relevant documents should be used as context."""
+
         result = self.ask_gassafe(
             "How should gas pipelines be inspected?"
         )
@@ -82,6 +96,7 @@ class TestRAGRetrieval(unittest.TestCase):
 
     def test_no_relevant_documents(self):
         """Distant matches must not produce unsupported answers."""
+
         self.collection.query.return_value = {
             "documents": [[
                 "Unrelated operational information."
@@ -101,7 +116,8 @@ class TestRAGRetrieval(unittest.TestCase):
         self.generate_answer.assert_not_called()
 
     def test_empty_database(self):
-        """The assistant must handle an empty document index."""
+        """Handle an empty document index safely."""
+
         self.collection.count.return_value = 0
 
         result = self.ask_gassafe(
@@ -109,18 +125,21 @@ class TestRAGRetrieval(unittest.TestCase):
         )
 
         self.assertIsNotNone(result)
+
         self.collection.query.assert_not_called()
         self.generate_answer.assert_not_called()
 
     def test_empty_question(self):
         """Blank questions must not trigger retrieval."""
+
         result = self.ask_gassafe("   ")
 
         self.assertIsNotNone(result)
+
         self.collection.query.assert_not_called()
         self.generate_answer.assert_not_called()
 
 
 if __name__ == "__main__":
     unittest.main()
-  
+    
