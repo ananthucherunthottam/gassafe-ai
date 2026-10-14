@@ -1,22 +1,26 @@
 
-from pathlib import Path
+import hashlib
 
 import chromadb
 from pypdf import PdfReader
 from sentence_transformers import SentenceTransformer
 
-PDF_DIR = Path("data/safety_manuals")
-DB_DIR = Path("chroma_db")
-COLLECTION_NAME = "gas_safety_pdf"
-EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-
-CHUNK_SIZE = 800
-CHUNK_OVERLAP = 150
-BATCH_SIZE = 64
+from config import (
+    PDF_DIR,
+    DB_DIR,
+    COLLECTION_NAME,
+    EMBEDDING_MODEL,
+    CHUNK_SIZE,
+    CHUNK_OVERLAP,
+    BATCH_SIZE,
+)
 
 
 def split_text(text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
     """Split text into overlapping character chunks."""
+    if chunk_size <= overlap or overlap < 0:
+        raise ValueError("Chunk size must be greater than overlap.")
+
     text = " ".join(text.split())
     step = chunk_size - overlap
 
@@ -28,38 +32,26 @@ def split_text(text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
 
 
 def main():
+    PDF_DIR.mkdir(parents=True, exist_ok=True)
+
     pdf_files = sorted(PDF_DIR.glob("*.pdf"))
 
     if not pdf_files:
-        print(f"No PDF files found in {PDF_DIR}")
+        print(f"No PDF files found in: {PDF_DIR}")
         print("Add an approved PDF and run this script again.")
         return
-
-    DB_DIR.mkdir(parents=True, exist_ok=True)
-
-    client = chromadb.PersistentClient(path=str(DB_DIR))
-
-    try:
-        client.delete_collection(COLLECTION_NAME)
-    except ValueError:
-        pass
-
-    collection = client.get_or_create_collection(
-        name=COLLECTION_NAME,
-        metadata={"hnsw:space": "cosine"},
-        embedding_function=None,
-    )
-
-    model = SentenceTransformer(EMBEDDING_MODEL, device="cpu")
 
     documents = []
     metadatas = []
     ids = []
 
     for pdf_path in pdf_files:
-        print(f"Reading {pdf_path.name}")
+        print(f"Reading: {pdf_path.name}")
 
         reader = PdfReader(str(pdf_path))
+        file_id = hashlib.sha256(
+            pdf_path.name.encode("utf-8")
+        ).hexdigest()[:16]
 
         for page_index, page in enumerate(reader.pages):
             text = page.extract_text() or ""
@@ -73,14 +65,36 @@ def main():
                 })
 
                 ids.append(
-                    f"{pdf_path.stem}_p{page_index + 1}_c{chunk_index}"
+                    f"{file_id}_p{page_index + 1}_c{chunk_index}"
                 )
 
     if not documents:
         print("No extractable text found in the PDFs.")
+        print("Scanned PDFs may require OCR.")
         return
 
     print(f"Creating embeddings for {len(documents)} chunks...")
+
+    model = SentenceTransformer(
+        EMBEDDING_MODEL,
+        device="cpu",
+    )
+
+    DB_DIR.mkdir(parents=True, exist_ok=True)
+
+    client = chromadb.PersistentClient(path=str(DB_DIR))
+
+    # Rebuild the collection using the current PDF documents.
+    try:
+        client.delete_collection(COLLECTION_NAME)
+    except ValueError:
+        pass
+
+    collection = client.get_or_create_collection(
+        name=COLLECTION_NAME,
+        metadata={"hnsw:space": "cosine"},
+        embedding_function=None,
+    )
 
     for start in range(0, len(documents), BATCH_SIZE):
         end = start + BATCH_SIZE
@@ -99,7 +113,9 @@ def main():
             embeddings=embeddings,
         )
 
-        print(f"Indexed {min(end, len(documents))}/{len(documents)}")
+        print(
+            f"Indexed {min(end, len(documents))}/{len(documents)}"
+        )
 
     print("PDF indexing completed successfully.")
     print(f"Vector database saved in: {DB_DIR}")
