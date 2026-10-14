@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# AI models
+models/
+*.gguf
+
+# PDF documents
+data/safety_manuals/
+*.pdf
+
+# Vector database
+chroma_db/
+pdf_chroma_db/
+
+# Secrets
+.env
+*.pem
+*.key
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Operating system
+.DS_Store
+Thumbs.db
