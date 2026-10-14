@@ -69,6 +69,10 @@ class TestRAGRetrieval(unittest.TestCase):
             "load_embedding_model": lambda: self.embedding_model,
             "get_embedding_model": lambda: self.embedding_model,
             "generate_answer": self.generate_answer,
+            "NOT_FOUND": (
+                "No relevant information found in the "
+                "uploaded documents."
+            ),
             "TOP_K": 3,
             "MAX_DISTANCE": 0.65,
         }
