@@ -33,7 +33,6 @@ def split_text(text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
 
 def main():
     PDF_DIR.mkdir(parents=True, exist_ok=True)
-
     pdf_files = sorted(PDF_DIR.glob("*.pdf"))
 
     if not pdf_files:
@@ -48,30 +47,40 @@ def main():
     for pdf_path in pdf_files:
         print(f"Reading: {pdf_path.name}")
 
-        reader = PdfReader(str(pdf_path))
-        file_id = hashlib.sha256(
-            pdf_path.name.encode("utf-8")
-        ).hexdigest()[:16]
+        try:
+            reader = PdfReader(str(pdf_path))
 
-        for page_index, page in enumerate(reader.pages):
-            text = page.extract_text() or ""
+            file_id = hashlib.sha256(
+                pdf_path.name.encode("utf-8")
+            ).hexdigest()[:16]
 
-            for chunk_index, chunk in enumerate(split_text(text)):
-                documents.append(chunk)
+            for page_index, page in enumerate(reader.pages):
+                text = page.extract_text() or ""
 
-                metadatas.append({
-                    "source": pdf_path.name,
-                    "page": page_index + 1,
-                })
+                for chunk_index, chunk in enumerate(split_text(text)):
+                    documents.append(chunk)
 
-                ids.append(
-                    f"{file_id}_p{page_index + 1}_c{chunk_index}"
-                )
+                    metadatas.append({
+                        "source": pdf_path.name,
+                        "page": page_index + 1,
+                    })
+
+                    ids.append(
+                        f"{file_id}_p{page_index + 1}_c{chunk_index}"
+                    )
+
+        except Exception as error:
+            raise RuntimeError(
+                f"Failed to process PDF: {pdf_path.name}"
+            ) from error
 
     if not documents:
         print("No extractable text found in the PDFs.")
         print("Scanned PDFs may require OCR.")
         return
+
+    if BATCH_SIZE <= 0:
+        raise ValueError("BATCH_SIZE must be greater than zero.")
 
     print(f"Creating embeddings for {len(documents)} chunks...")
 
@@ -81,16 +90,20 @@ def main():
     )
 
     DB_DIR.mkdir(parents=True, exist_ok=True)
-
     client = chromadb.PersistentClient(path=str(DB_DIR))
 
-    # Rebuild the collection using the current PDF documents.
-    try:
-        client.delete_collection(COLLECTION_NAME)
-    except ValueError:
-        pass
+    # Find the existing collection without relying on
+    # version-specific 'collection not found' exceptions.
+    existing_names = {
+        collection.name
+        for collection in client.list_collections()
+    }
 
-    collection = client.get_or_create_collection(
+    if COLLECTION_NAME in existing_names:
+        print("Removing the previous PDF index...")
+        client.delete_collection(name=COLLECTION_NAME)
+
+    collection = client.create_collection(
         name=COLLECTION_NAME,
         metadata={"hnsw:space": "cosine"},
         embedding_function=None,
