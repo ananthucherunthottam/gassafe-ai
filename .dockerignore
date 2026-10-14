@@ -1,0 +1,40 @@
+
+# Git files
+.git
+.gitignore
+
+# Python cache and virtual environments
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# Local AI models
+models/
+*.gguf
+
+# PDF documents
+data/safety_manuals/
+*.pdf
+
+# Vector database
+chroma_db/
+pdf_chroma_db/
+
+# Secrets and credentials
+.env
+.env.*
+*.pem
+*.key
+.streamlit/secrets.toml
+
+# Local development files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Logs
+*.log
+  
