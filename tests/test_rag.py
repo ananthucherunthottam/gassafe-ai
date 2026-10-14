@@ -7,10 +7,11 @@ from unittest.mock import MagicMock
 
 def load_ask_gassafe():
     """
-    Load the RAG function without importing
+    Load ask_gassafe from rag.py without importing
     heavyweight AI dependencies.
     """
     source_path = Path(__file__).resolve().parents[1] / "rag.py"
+
     source = source_path.read_text(encoding="utf-8")
     tree = ast.parse(source)
 
@@ -25,6 +26,7 @@ def load_ask_gassafe():
         body=[function],
         type_ignores=[]
     )
+
     ast.fix_missing_locations(module)
 
     return compile(
@@ -37,7 +39,7 @@ def load_ask_gassafe():
 class TestRAGRetrieval(unittest.TestCase):
 
     def setUp(self):
-        """Prepare mocked dependencies for RAG testing."""
+        """Prepare mocked RAG dependencies."""
 
         self.collection = MagicMock()
         self.embedding_model = MagicMock()
@@ -66,6 +68,7 @@ class TestRAGRetrieval(unittest.TestCase):
         self.namespace = {
             "load_collection": lambda: self.collection,
             "get_collection": lambda: self.collection,
+            "load_embeddings": lambda: self.embedding_model,
             "load_embedding_model": lambda: self.embedding_model,
             "get_embedding_model": lambda: self.embedding_model,
             "generate_answer": self.generate_answer,
@@ -97,9 +100,10 @@ class TestRAGRetrieval(unittest.TestCase):
         )
 
         self.collection.query.assert_called_once()
+        self.generate_answer.assert_called_once()
 
     def test_no_relevant_documents(self):
-        """Distant matches must not produce unsupported answers."""
+        """Reject matches beyond the similarity threshold."""
 
         self.collection.query.return_value = {
             "documents": [[
