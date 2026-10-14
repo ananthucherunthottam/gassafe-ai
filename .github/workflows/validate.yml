@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   validate:
-    name: Check Python Syntax
+    name: Python Validation and Tests
     runs-on: ubuntu-latest
 
     steps:
@@ -23,6 +23,11 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install lightweight test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pypdf
+
       - name: Check Python syntax
         run: |
           python -m py_compile app.py
@@ -31,6 +36,7 @@ jobs:
           python -m py_compile ingest.py
           python -m py_compile rag.py
           python -m py_compile tests/test_chunking.py
+          python -m py_compile tests/test_pdf_ingestion.py
 
       - name: Validate requirements file
         run: |
@@ -47,10 +53,12 @@ jobs:
           }
 
           lines = Path("requirements.txt").read_text().splitlines()
+
           packages = {
               line.strip().lower()
               for line in lines
-              if line.strip() and not line.lstrip().startswith("#")
+              if line.strip()
+              and not line.lstrip().startswith("#")
           }
 
           missing = required - packages
@@ -63,10 +71,10 @@ jobs:
           print("All required dependency names are present.")
           PY
 
-      - name: Run PDF chunking tests
+      - name: Run automated tests
         run: |
           python -m unittest discover -s tests -p "test_*.py" -v
 
       - name: Validation complete
-        run: echo "GasSafe AI validation checks passed."
-        
+        run: echo "GasSafe AI validation and tests passed."
+  
