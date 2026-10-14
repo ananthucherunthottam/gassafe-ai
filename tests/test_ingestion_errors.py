@@ -38,11 +38,14 @@ def load_ingestion_functions():
             "Required ingestion functions not found."
         )
 
-    # Explicit arguments will be supplied to split_text
-    # in these tests, so configuration defaults are removed.
+    # Preserve split_text's default arguments.
+    # Replace config.py constants with literal values.
     for function in functions:
         if function.name == "split_text":
-            function.args.defaults = []
+            function.args.defaults = [
+                ast.Constant(value=800),
+                ast.Constant(value=150),
+            ]
 
     module = ast.Module(
         body=functions,
@@ -74,8 +77,14 @@ class TestIngestionErrors(unittest.TestCase):
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.pdf_dir = Path(self.temp_dir.name) / "pdfs"
-        self.db_dir = Path(self.temp_dir.name) / "db"
+
+        self.pdf_dir = (
+            Path(self.temp_dir.name) / "pdfs"
+        )
+
+        self.db_dir = (
+            Path(self.temp_dir.name) / "db"
+        )
 
         self.pdf_dir.mkdir()
 
@@ -83,12 +92,23 @@ class TestIngestionErrors(unittest.TestCase):
 
         self.namespace["PDF_DIR"] = self.pdf_dir
         self.namespace["DB_DIR"] = self.db_dir
-        self.namespace["COLLECTION_NAME"] = "gas_safety_pdf"
+        self.namespace["COLLECTION_NAME"] = (
+            "gas_safety_pdf"
+        )
 
-        self.namespace["SentenceTransformer"] = MagicMock()
+        self.namespace["SentenceTransformer"] = (
+            MagicMock()
+        )
+
         self.namespace["chromadb"] = MagicMock()
-        self.namespace["build_collection"] = MagicMock()
-        self.namespace["promote_collection"] = MagicMock()
+
+        self.namespace["build_collection"] = (
+            MagicMock()
+        )
+
+        self.namespace["promote_collection"] = (
+            MagicMock()
+        )
 
         self.read_pdf_chunks = self.namespace[
             "read_pdf_chunks"
@@ -100,7 +120,10 @@ class TestIngestionErrors(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_missing_pdfs(self):
-        """No PDFs should leave the existing index untouched."""
+        """
+        No PDFs should leave the existing
+        index untouched.
+        """
         self.main()
 
         self.namespace[
@@ -112,8 +135,14 @@ class TestIngestionErrors(unittest.TestCase):
         ].PersistentClient.assert_not_called()
 
     def test_corrupted_pdf(self):
-        """Invalid PDF content should raise a useful error."""
-        bad_pdf = self.pdf_dir / "corrupted.pdf"
+        """
+        Invalid PDF content should raise
+        a useful error.
+        """
+        bad_pdf = (
+            self.pdf_dir / "corrupted.pdf"
+        )
+
         bad_pdf.write_bytes(
             b"This is not a valid PDF file."
         )
@@ -125,10 +154,16 @@ class TestIngestionErrors(unittest.TestCase):
             self.read_pdf_chunks([bad_pdf])
 
     def test_pdf_without_extractable_text(self):
-        """A blank PDF must not produce document chunks."""
-        blank_pdf = self.pdf_dir / "blank.pdf"
+        """
+        A blank PDF must not produce
+        document chunks.
+        """
+        blank_pdf = (
+            self.pdf_dir / "blank.pdf"
+        )
 
         writer = PdfWriter()
+
         writer.add_blank_page(
             width=300,
             height=300,
@@ -146,9 +181,17 @@ class TestIngestionErrors(unittest.TestCase):
         self.assertEqual(ids, [])
 
     def test_invalid_batch_size(self):
-        """Invalid batch size must be rejected."""
-        sample_pdf = self.pdf_dir / "sample.pdf"
-        sample_pdf.write_bytes(b"placeholder")
+        """
+        Invalid batch size must be
+        rejected before indexing.
+        """
+        sample_pdf = (
+            self.pdf_dir / "sample.pdf"
+        )
+
+        sample_pdf.write_bytes(
+            b"placeholder"
+        )
 
         with patch.dict(
             self.namespace,
@@ -165,10 +208,16 @@ class TestIngestionErrors(unittest.TestCase):
         ].assert_not_called()
 
     def test_no_text_preserves_existing_index(self):
-        """A blank PDF must not trigger index replacement."""
-        blank_pdf = self.pdf_dir / "blank.pdf"
+        """
+        A blank PDF must not trigger
+        index replacement.
+        """
+        blank_pdf = (
+            self.pdf_dir / "blank.pdf"
+        )
 
         writer = PdfWriter()
+
         writer.add_blank_page(
             width=300,
             height=300,
@@ -190,4 +239,4 @@ class TestIngestionErrors(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-  
+    
