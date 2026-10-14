@@ -1,0 +1,64 @@
+
+name: GasSafe AI Validation
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Check Python Syntax
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Check Python syntax
+        run: |
+          python -m py_compile app.py
+          python -m py_compile config.py
+          python -m py_compile llm.py
+          python -m py_compile ingest.py
+          python -m py_compile rag.py
+
+      - name: Validate requirements file
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          required = {
+              "streamlit",
+              "chromadb",
+              "sentence-transformers",
+              "pypdf",
+              "llama-cpp-python",
+              "huggingface-hub",
+          }
+
+          lines = Path("requirements.txt").read_text().splitlines()
+          packages = {
+              line.strip().lower()
+              for line in lines
+              if line.strip() and not line.lstrip().startswith("#")
+          }
+
+          missing = required - packages
+          if missing:
+              raise SystemExit(f"Missing dependencies: {sorted(missing)}")
+
+          print("All required dependency names are present.")
+          PY
+
+      - name: Validation complete
+        run: echo "GasSafe AI static checks passed."
+  
