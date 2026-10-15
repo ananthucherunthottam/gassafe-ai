@@ -1,0 +1,310 @@
+
+name: GasSafe AI Security and Reliability Validation
+
+on:
+  workflow_dispatch:
+
+jobs:
+  security-validation:
+    name: Docker security and persistence checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate Docker Compose
+        run: docker compose config --quiet
+
+      - name: Build application image
+        run: docker compose build
+
+      - name: Start application
+        run: docker compose up -d --no-build
+
+      - name: Wait for healthy application
+        run: |
+          for attempt in $(seq 1 40); do
+            CONTAINER_ID=$(docker compose ps -q gassafe-ai)
+
+            if [ -n "$CONTAINER_ID" ]; then
+              STATUS=$(docker inspect \
+                --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
+                "$CONTAINER_ID")
+
+              echo "Health: $STATUS"
+
+              if [ "$STATUS" = "healthy" ]; then
+                exit 0
+              fi
+
+              if [ "$STATUS" = "unhealthy" ]; then
+                docker compose logs --tail=100
+                exit 1
+              fi
+            fi
+
+            sleep 5
+          done
+
+          echo "Application did not become healthy."
+          exit 1
+
+      - name: Validate security configuration
+        run: |
+          python - <<'PY'
+          import json
+          import subprocess
+
+          def command(*args):
+              return subprocess.check_output(
+                  args,
+                  text=True,
+              ).strip()
+
+          container_id = command(
+              "docker", "compose", "ps",
+              "-q", "gassafe-ai"
+          )
+
+          assert container_id, "Container not found."
+
+          container = json.loads(command(
+              "docker", "inspect", container_id
+          ))[0]
+
+          host = container["HostConfig"]
+          config = container["Config"]
+
+          print("Checking network exposure...")
+
+          ports = host.get("PortBindings") or {}
+          bindings = ports.get("8501/tcp", [])
+
+          assert bindings, (
+              "Expected Streamlit port binding missing."
+          )
+
+          assert all(
+              binding.get("HostIp") == "127.0.0.1"
+              and binding.get("HostPort") == "8501"
+              for binding in bindings
+          ), "Streamlit must bind only to localhost."
+
+          print("Localhost binding verified.")
+
+          print("Checking privilege escalation...")
+
+          security_options = (
+              host.get("SecurityOpt") or []
+          )
+
+          assert any(
+              "no-new-privileges" in option
+              for option in security_options
+          ), "no-new-privileges is not enabled."
+
+          print("Privilege escalation restricted.")
+
+          print("Checking Linux capabilities...")
+
+          cap_drop = host.get("CapDrop") or []
+
+          assert any(
+              value.upper() == "ALL"
+              for value in cap_drop
+          ), "All Linux capabilities must be dropped."
+
+          print("Capabilities dropped.")
+
+          print("Checking source PDF mount...")
+
+          mounts = container.get("Mounts") or []
+
+          pdf_mounts = [
+              mount for mount in mounts
+              if mount.get("Destination")
+              == "/app/data/safety_manuals"
+          ]
+
+          assert len(pdf_mounts) == 1, (
+              "Expected PDF mount not found."
+          )
+
+          assert pdf_mounts[0].get("RW") is False, (
+              "PDF directory must be read-only."
+          )
+
+          print("PDF mount is read-only.")
+
+          print("Checking persistent volumes...")
+
+          expected_volumes = {
+              "/app/chroma_db",
+              "/app/models",
+              "/app/.cache/huggingface",
+          }
+
+          actual_volumes = {
+              mount["Destination"]
+              for mount in mounts
+              if mount.get("Type") == "volume"
+              and mount.get("RW") is True
+          }
+
+          assert expected_volumes.issubset(
+              actual_volumes
+          ), (
+              "Missing writable persistent volumes: "
+              f"{expected_volumes - actual_volumes}"
+          )
+
+          print("Persistent volumes verified.")
+
+          print("Checking container user...")
+
+          user = command(
+              "docker", "compose", "exec", "-T",
+              "gassafe-ai", "id", "-u"
+          )
+
+          assert user != "0", (
+              "Application must not run as root."
+          )
+
+          print(f"Non-root UID verified: {user}")
+
+          print("All security checks passed.")
+          PY
+
+      - name: Check writable runtime directories
+        run: |
+          docker compose exec -T gassafe-ai \
+            python - <<'PY'
+          from pathlib import Path
+          import tempfile
+
+          directories = [
+              Path("/app/models"),
+              Path("/app/chroma_db"),
+              Path("/app/.cache/huggingface"),
+          ]
+
+          for directory in directories:
+              assert directory.is_dir(), (
+                  f"Missing directory: {directory}"
+              )
+
+              with tempfile.NamedTemporaryFile(
+                  dir=directory,
+                  prefix="gassafe-security-",
+                  delete=True,
+              ) as handle:
+                  handle.write(b"write-check")
+                  handle.flush()
+
+              print(
+                  f"Writable: {directory}",
+                  flush=True,
+              )
+
+          print("Runtime write checks passed.")
+          PY
+
+      - name: Write persistence marker
+        run: |
+          docker compose exec -T gassafe-ai \
+            python - <<'PY'
+          from pathlib import Path
+
+          marker = Path(
+              "/app/chroma_db/"
+              "gassafe_persistence_check.txt"
+          )
+
+          marker.write_text(
+              "GASSAFE-PERSISTENCE-OK",
+              encoding="utf-8",
+          )
+
+          print("Persistence marker written.")
+          PY
+
+      - name: Restart application
+        run: docker compose restart gassafe-ai
+
+      - name: Wait for health after restart
+        run: |
+          for attempt in $(seq 1 40); do
+            CONTAINER_ID=$(docker compose ps -q gassafe-ai)
+
+            if [ -n "$CONTAINER_ID" ]; then
+              STATUS=$(docker inspect \
+                --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
+                "$CONTAINER_ID")
+
+              echo "Post-restart health: $STATUS"
+
+              if [ "$STATUS" = "healthy" ]; then
+                exit 0
+              fi
+
+              if [ "$STATUS" = "unhealthy" ]; then
+                docker compose logs --tail=100
+                exit 1
+              fi
+            fi
+
+            sleep 5
+          done
+
+          echo "Application did not recover after restart."
+          exit 1
+
+      - name: Verify persistence after restart
+        run: |
+          docker compose exec -T gassafe-ai \
+            python - <<'PY'
+          from pathlib import Path
+
+          marker = Path(
+              "/app/chroma_db/"
+              "gassafe_persistence_check.txt"
+          )
+
+          assert marker.is_file(), (
+              "Persistent data missing after restart."
+          )
+
+          assert marker.read_text(
+              encoding="utf-8"
+          ) == "GASSAFE-PERSISTENCE-OK", (
+              "Persistent data changed after restart."
+          )
+
+          marker.unlink()
+
+          print(
+              "Persistent data survived restart.",
+              flush=True,
+          )
+          PY
+
+      - name: Verify HTTP health endpoint
+        run: |
+          curl --fail --silent --show-error \
+            http://127.0.0.1:8501/_stcore/health
+
+      - name: Show container status
+        if: always()
+        run: docker compose ps
+
+      - name: Show logs on failure
+        if: failure()
+        run: docker compose logs --tail=150
+
+      - name: Stop containers
+        if: always()
+        run: docker compose down
+        
