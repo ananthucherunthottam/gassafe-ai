@@ -1,0 +1,316 @@
+
+name: GasSafe AI MVP Release Validation
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  release-validation:
+    name: Validate MVP release readiness
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Create report directory
+        run: mkdir -p release-report
+
+      - name: Check required project files
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          required = [
+              "app.py",
+              "rag.py",
+              "llm.py",
+              "ingest.py",
+              "config.py",
+              "requirements.txt",
+              "Dockerfile",
+              "docker-compose.yml",
+              ".dockerignore",
+              ".gitignore",
+              "start.sh",
+              "start.ps1",
+              "README.md",
+              ".github/workflows/validate.yml",
+              ".github/workflows/docker-validate.yml",
+              ".github/workflows/ingestion-validate.yml",
+              ".github/workflows/qwen-validate.yml",
+              ".github/workflows/e2e-validate.yml",
+              ".github/workflows/ui-validate.yml",
+              ".github/workflows/security-validate.yml",
+          ]
+
+          missing = [
+              name for name in required
+              if not Path(name).is_file()
+          ]
+
+          with open(
+              "release-report/file-check.txt",
+              "w",
+              encoding="utf-8",
+          ) as report:
+              for name in required:
+                  status = (
+                      "MISSING" if name in missing
+                      else "OK"
+                  )
+                  report.write(
+                      f"{status}: {name}\n"
+                  )
+
+          if missing:
+              raise SystemExit(
+                  "Missing required files: "
+                  + ", ".join(missing)
+              )
+
+          print(
+              "All required project files exist."
+          )
+          PY
+
+      - name: Validate Python syntax
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import py_compile
+
+          paths = [
+              Path("app.py"),
+              Path("rag.py"),
+              Path("llm.py"),
+              Path("ingest.py"),
+              Path("config.py"),
+          ]
+
+          paths.extend(
+              Path("tests").glob("test_*.py")
+          )
+
+          for path in paths:
+              py_compile.compile(
+                  str(path),
+                  doraise=True,
+              )
+              print(f"Valid: {path}")
+
+          print("Python syntax checks passed.")
+          PY
+
+      - name: Validate requirements
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          text = Path(
+              "requirements.txt"
+          ).read_text(
+              encoding="utf-8"
+          ).lower()
+
+          required_packages = [
+              "streamlit",
+              "chromadb",
+              "sentence-transformers",
+              "pypdf",
+              "llama-cpp-python",
+              "huggingface-hub",
+          ]
+
+          missing = [
+              package
+              for package in required_packages
+              if package not in text
+          ]
+
+          assert not missing, (
+              "Missing requirements: "
+              + ", ".join(missing)
+          )
+
+          print(
+              "Required dependency declarations found."
+          )
+          PY
+
+      - name: Install unit test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pypdf chromadb
+
+      - name: Run Python unit tests
+        run: |
+          set -o pipefail
+
+          python -m unittest discover \
+            -s tests \
+            -p "test_*.py" \
+            -v 2>&1 | tee \
+            release-report/unit-tests.txt
+
+      - name: Validate Docker Compose
+        run: |
+          docker compose config --quiet
+
+          docker compose config \
+            > release-report/compose-resolved.yml
+
+          echo "Docker Compose configuration valid."
+
+      - name: Validate Dockerfile safeguards
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          text = Path(
+              "Dockerfile"
+          ).read_text(
+              encoding="utf-8"
+          ).lower()
+
+          assert "user gassafe" in text, (
+              "Expected non-root Docker user missing."
+          )
+
+          assert "healthcheck" in text, (
+              "Docker health check missing."
+          )
+
+          print(
+              "Dockerfile safeguards verified."
+          )
+          PY
+
+      - name: Validate README documentation
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          readme = Path(
+              "README.md"
+          ).read_text(
+              encoding="utf-8"
+          ).lower()
+
+          required_topics = [
+              "quick start",
+              "docker compose",
+              "safety",
+              "troubleshooting",
+              "limitations",
+              "license",
+          ]
+
+          missing = [
+              topic
+              for topic in required_topics
+              if topic not in readme
+          ]
+
+          assert not missing, (
+              "README missing topics: "
+              + ", ".join(missing)
+          )
+
+          print(
+              "Release documentation topics verified."
+          )
+          PY
+
+      - name: Generate release validation report
+        if: always()
+        env:
+          RUN_RESULT: ${{ job.status }}
+          COMMIT_SHA: ${{ github.sha }}
+          REF_NAME: ${{ github.ref_name }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          python - <<'PY'
+          from datetime import datetime, timezone
+          from pathlib import Path
+          import os
+
+          report = [
+              "# GasSafe AI MVP Release Validation",
+              "",
+              "Generated: "
+              + datetime.now(
+                  timezone.utc
+              ).isoformat(),
+              "",
+              "Git ref: "
+              + os.environ["REF_NAME"],
+              "",
+              "Commit: "
+              + os.environ["COMMIT_SHA"],
+              "",
+              "Workflow run: "
+              + os.environ["RUN_NUMBER"],
+              "",
+              "Job result: "
+              + os.environ["RUN_RESULT"],
+              "",
+              "## Scope",
+              "",
+              "- Required file checks",
+              "- Python syntax checks",
+              "- Dependency declaration checks",
+              "- Python unit tests",
+              "- Docker Compose configuration",
+              "- Dockerfile safeguard checks",
+              "- README topic checks",
+              "",
+              "## Important limitations",
+              "",
+              "This workflow does not execute the "
+              "real Qwen model or test browser "
+              "interactions.",
+              "",
+              "Review the dedicated Docker, "
+              "ingestion, Qwen, end-to-end, UI, "
+              "and security workflows separately.",
+              "",
+              "A passing workflow is not "
+              "production safety certification.",
+              "",
+          ]
+
+          Path(
+              "release-report/"
+              "release-validation.md"
+          ).write_text(
+              "\n".join(report),
+              encoding="utf-8",
+          )
+
+          print(
+              "Release report generated."
+          )
+          PY
+
+      - name: Upload release validation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gassafe-mvp-release-report
+          path: release-report/
+          if-no-files-found: warn
+          retention-days: 30
+          
