@@ -11,12 +11,48 @@ services:
       - "127.0.0.1:8501:8501"
 
     volumes:
+      # Read-only source PDF documents
       - ./data/safety_manuals:/app/data/safety_manuals:ro
-      - ./models:/app/models
-      - ./chroma_db:/app/chroma_db
+
+      # Persistent ChromaDB vector database
+      - gassafe_chroma:/app/chroma_db
+
+      # Persistent Qwen model files
+      - gassafe_models:/app/models
+
+      # Persistent Hugging Face embedding-model cache
+      - gassafe_hf_cache:/app/.cache/huggingface
 
     environment:
       PYTHONUNBUFFERED: "1"
+      HF_HOME: "/app/.cache/huggingface"
+      TOKENIZERS_PARALLELISM: "false"
+
+    security_opt:
+      - no-new-privileges:true
+
+    cap_drop:
+      - ALL
+
+    init: true
 
     restart: unless-stopped
+
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - --fail
+        - --silent
+        - http://127.0.0.1:8501/_stcore/health
+
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+
+volumes:
+  gassafe_chroma:
+  gassafe_models:
+  gassafe_hf_cache:
   
