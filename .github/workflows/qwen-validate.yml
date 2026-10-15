@@ -1,0 +1,243 @@
+
+name: GasSafe AI Qwen Inference Validation
+
+on:
+  workflow_dispatch:
+
+jobs:
+  qwen-validation:
+    name: Validate real Qwen CPU inference
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate Docker Compose configuration
+        run: docker compose config --quiet
+
+      - name: Build Docker image
+        run: docker compose build
+
+      - name: Start GasSafe AI container
+        run: docker compose up -d --no-build
+
+      - name: Wait for container health
+        run: |
+          for attempt in $(seq 1 40); do
+            STATUS=$(docker inspect \
+              --format='{{.State.Health.Status}}' \
+              gassafe-ai)
+
+            echo "Container health: $STATUS"
+
+            if [ "$STATUS" = "healthy" ]; then
+              echo "Streamlit is healthy."
+              exit 0
+            fi
+
+            if [ "$STATUS" = "unhealthy" ]; then
+              docker compose logs --tail=100
+              exit 1
+            fi
+
+            sleep 5
+          done
+
+          echo "Container health timeout."
+          exit 1
+
+      - name: Verify model storage permissions
+        run: |
+          docker compose exec -T gassafe-ai \
+            python - <<'PY'
+          from pathlib import Path
+
+          from config import MODEL_DIR
+
+          MODEL_DIR.mkdir(
+              parents=True,
+              exist_ok=True,
+          )
+
+          test_file = MODEL_DIR / ".write_test"
+
+          test_file.write_text("ok")
+
+          assert test_file.read_text() == "ok"
+
+          test_file.unlink()
+
+          print("Model storage is writable.")
+          PY
+
+      - name: Download and load Qwen model
+        timeout-minutes: 35
+        run: |
+          docker compose exec -T gassafe-ai \
+            python - <<'PY'
+          from pathlib import Path
+
+          from config import MODEL_DIR
+          from llm import load_model
+
+          print(
+              "Downloading and loading Qwen...",
+              flush=True,
+          )
+
+          model = load_model()
+
+          assert model is not None
+
+          model_files = list(
+              Path(MODEL_DIR).glob("*.gguf")
+          )
+
+          assert model_files, (
+              "No GGUF model file was downloaded."
+          )
+
+          for model_file in model_files:
+              print(
+                  "Model file:",
+                  model_file.name,
+                  flush=True,
+              )
+
+              print(
+                  "Size (MB):",
+                  round(
+                      model_file.stat().st_size
+                      / (1024 * 1024),
+                      2,
+                  ),
+                  flush=True,
+              )
+
+          print(
+              "Qwen loaded successfully.",
+              flush=True,
+          )
+          PY
+
+      - name: Test real answer generation
+        timeout-minutes: 20
+        run: |
+          docker compose exec -T gassafe-ai \
+            python - <<'PY'
+          from llm import generate_answer
+
+          question = (
+              "What is the inspection marker?"
+          )
+
+          context = (
+              "Synthetic test document. "
+              "The inspection marker is "
+              "BLUE-PINE-742."
+          )
+
+          print(
+              "Generating answer using Qwen...",
+              flush=True,
+          )
+
+          answer = generate_answer(
+              question,
+              context,
+          )
+
+          print(
+              "Qwen response:",
+              repr(answer),
+              flush=True,
+          )
+
+          assert isinstance(answer, str), (
+              "Answer must be a string."
+          )
+
+          assert answer.strip(), (
+              "Qwen returned an empty answer."
+          )
+
+          print(
+              "Real Qwen inference passed.",
+              flush=True,
+          )
+          PY
+
+      - name: Test empty context fallback
+        run: |
+          docker compose exec -T gassafe-ai \
+            python - <<'PY'
+          from llm import generate_answer
+
+          expected = (
+              "I could not find this information "
+              "in the provided documents."
+          )
+
+          answer = generate_answer(
+              "What is the inspection marker?",
+              "",
+          )
+
+          assert answer == expected, (
+              "Incorrect empty-context fallback."
+          )
+
+          print(
+              "Empty-context fallback passed."
+          )
+          PY
+
+      - name: Restart container
+        run: docker compose restart gassafe-ai
+
+      - name: Verify model persists after restart
+        run: |
+          docker compose exec -T gassafe-ai \
+            python - <<'PY'
+          from pathlib import Path
+
+          from config import MODEL_DIR, MODEL_FILE
+
+          model_path = (
+              Path(MODEL_DIR) / MODEL_FILE
+          )
+
+          assert model_path.is_file(), (
+              "Downloaded Qwen model was not "
+              "preserved after restart."
+          )
+
+          assert model_path.stat().st_size > 0, (
+              "Downloaded model file is empty."
+          )
+
+          print(
+              "Qwen model persistence passed."
+          )
+
+          print(
+              "Model:",
+              model_path.name,
+          )
+          PY
+
+      - name: Show container status
+        if: always()
+        run: docker compose ps
+
+      - name: Show logs on failure
+        if: failure()
+        run: docker compose logs --tail=150
+
+      - name: Stop containers
+        if: always()
+        run: docker compose down
+        
