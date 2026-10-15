@@ -1,0 +1,258 @@
+
+name: GasSafe AI End-to-End Validation
+
+on:
+  workflow_dispatch:
+
+jobs:
+  e2e-validation:
+    name: Full PDF to Qwen integration
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate Docker configuration
+        run: docker compose config --quiet
+
+      - name: Install PDF fixture generator
+        run: python -m pip install reportlab
+
+      - name: Create synthetic test PDF
+        run: |
+          mkdir -p data/safety_manuals
+
+          python - <<'PY'
+          from reportlab.pdfgen import canvas
+
+          output = (
+              "data/safety_manuals/"
+              "gassafe_e2e_test.pdf"
+          )
+
+          pdf = canvas.Canvas(output)
+
+          pdf.drawString(
+              50, 750,
+              "GasSafe AI Synthetic Test Document"
+          )
+
+          pdf.drawString(
+              50, 720,
+              "The inspection marker is BLUE-PINE-742."
+          )
+
+          pdf.drawString(
+              50, 690,
+              "This is synthetic testing data."
+          )
+
+          pdf.drawString(
+              50, 660,
+              "It does not describe real gas procedures."
+          )
+
+          pdf.save()
+
+          print("Synthetic PDF created:", output)
+          PY
+
+      - name: Build Docker image
+        run: docker compose build
+
+      - name: Start application container
+        run: docker compose up -d --no-build
+
+      - name: Wait for Streamlit health
+        run: |
+          for attempt in $(seq 1 40); do
+            STATUS=$(docker inspect \
+              --format='{{.State.Health.Status}}' \
+              gassafe-ai)
+
+            echo "Container status: $STATUS"
+
+            if [ "$STATUS" = "healthy" ]; then
+              echo "Streamlit is healthy."
+              exit 0
+            fi
+
+            if [ "$STATUS" = "unhealthy" ]; then
+              docker compose logs --tail=100
+              exit 1
+            fi
+
+            sleep 5
+          done
+
+          echo "Container failed to become healthy."
+          exit 1
+
+      - name: Ingest synthetic PDF
+        timeout-minutes: 25
+        run: |
+          docker compose exec -T gassafe-ai \
+            python ingest.py
+
+      - name: Verify indexed PDF metadata
+        run: |
+          docker compose exec -T gassafe-ai \
+            python - <<'PY'
+          import chromadb
+
+          from config import DB_DIR, COLLECTION_NAME
+
+          client = chromadb.PersistentClient(
+              path=str(DB_DIR)
+          )
+
+          collection = client.get_collection(
+              name=COLLECTION_NAME
+          )
+
+          assert collection.count() > 0, (
+              "No indexed document chunks."
+          )
+
+          records = collection.get(
+              include=["documents", "metadatas"]
+          )
+
+          found = False
+
+          for document, metadata in zip(
+              records["documents"],
+              records["metadatas"],
+          ):
+              if (
+                  metadata.get("source")
+                  == "gassafe_e2e_test.pdf"
+                  and metadata.get("page") == 1
+                  and "BLUE-PINE-742" in document
+              ):
+                  found = True
+                  break
+
+          assert found, (
+              "Synthetic PDF metadata or text missing."
+          )
+
+          print(
+              "PDF indexing and metadata verified."
+          )
+          PY
+
+      - name: Test empty question fallback
+        run: |
+          docker compose exec -T gassafe-ai \
+            python - <<'PY'
+          from rag import ask_gassafe
+
+          result = ask_gassafe("   ")
+
+          assert isinstance(result, dict)
+
+          assert result["sources"] == []
+
+          assert (
+              result["answer"]
+              == "Please enter a question."
+          )
+
+          print(
+              "Empty question validation passed."
+          )
+          PY
+
+      - name: Run full RAG and Qwen inference
+        timeout-minutes: 35
+        run: |
+          docker compose exec -T gassafe-ai \
+            python - <<'PY'
+          from rag import ask_gassafe
+
+          question = (
+              "What is the inspection marker "
+              "in the synthetic test document?"
+          )
+
+          print(
+              "Running full RAG pipeline...",
+              flush=True,
+          )
+
+          result = ask_gassafe(question)
+
+          assert isinstance(result, dict), (
+              "RAG result must be a dictionary."
+          )
+
+          answer = result.get("answer", "")
+          sources = result.get("sources", [])
+
+          print(
+              "Answer:",
+              repr(answer),
+              flush=True,
+          )
+
+          print(
+              "Sources:",
+              sources,
+              flush=True,
+          )
+
+          assert isinstance(answer, str), (
+              "Answer must be text."
+          )
+
+          assert answer.strip(), (
+              "Generated answer is empty."
+          )
+
+          assert isinstance(sources, list), (
+              "Sources must be a list."
+          )
+
+          assert sources, (
+              "No PDF citations returned."
+          )
+
+          assert any(
+              source.get("file")
+              == "gassafe_e2e_test.pdf"
+              and source.get("page") == 1
+              for source in sources
+          ), "Correct PDF citation missing."
+
+          assert "BLUE-PINE-742" in answer, (
+              "Qwen did not return the "
+              "expected inspection marker."
+          )
+
+          print(
+              "Full RAG integration passed.",
+              flush=True,
+          )
+          PY
+
+      - name: Verify Streamlit HTTP health
+        run: |
+          curl --fail --silent \
+            http://127.0.0.1:8501/_stcore/health
+
+      - name: Show container status
+        if: always()
+        run: docker compose ps
+
+      - name: Show logs on failure
+        if: failure()
+        run: docker compose logs --tail=150
+
+      - name: Stop containers
+        if: always()
+        run: docker compose down
+        
