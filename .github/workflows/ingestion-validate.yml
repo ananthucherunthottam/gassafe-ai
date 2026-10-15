@@ -1,0 +1,292 @@
+
+name: GasSafe AI Ingestion Validation
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ingestion-validation:
+    name: Test PDF ingestion and retrieval
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install PDF fixture dependency
+        run: python -m pip install reportlab
+
+      - name: Create synthetic PDF fixture
+        run: |
+          mkdir -p data/safety_manuals
+
+          python - <<'PY'
+          from reportlab.pdfgen import canvas
+
+          output = (
+              "data/safety_manuals/"
+              "gassafe_ingestion_test.pdf"
+          )
+
+          pdf = canvas.Canvas(output)
+
+          pdf.drawString(
+              50,
+              750,
+              "GasSafe AI Synthetic Safety Test"
+          )
+
+          pdf.drawString(
+              50,
+              720,
+              "The inspection marker is BLUE-PINE-742."
+          )
+
+          pdf.drawString(
+              50,
+              690,
+              "This is synthetic test data only."
+          )
+
+          pdf.save()
+
+          print("Created:", output)
+          PY
+
+      - name: Build Docker image
+        run: docker compose build
+
+      - name: Start GasSafe AI
+        run: docker compose up -d --no-build
+
+      - name: Wait for container health
+        run: |
+          for attempt in $(seq 1 30); do
+            STATUS=$(docker inspect \
+              --format='{{.State.Health.Status}}' \
+              gassafe-ai)
+
+            echo "Health: $STATUS"
+
+            if [ "$STATUS" = "healthy" ]; then
+              echo "Container is healthy."
+              exit 0
+            fi
+
+            if [ "$STATUS" = "unhealthy" ]; then
+              docker compose logs --tail=100
+              exit 1
+            fi
+
+            sleep 5
+          done
+
+          echo "Container health timeout."
+          docker compose logs --tail=100
+          exit 1
+
+      - name: Verify writable directories
+        run: |
+          docker compose exec -T gassafe-ai \
+            python - <<'PY'
+          from pathlib import Path
+
+          directories = [
+              Path("/app/models"),
+              Path("/app/chroma_db"),
+              Path("/app/.cache/huggingface"),
+          ]
+
+          for directory in directories:
+              test_file = directory / ".write_test"
+
+              test_file.write_text("ok")
+
+              assert test_file.read_text() == "ok"
+
+              test_file.unlink()
+
+              print("Writable:", directory)
+          PY
+
+      - name: Ingest PDF documents
+        run: |
+          docker compose exec -T gassafe-ai \
+            python ingest.py
+
+      - name: Validate ChromaDB index and metadata
+        run: |
+          docker compose exec -T gassafe-ai \
+            python - <<'PY'
+          import chromadb
+
+          from config import DB_DIR, COLLECTION_NAME
+
+          client = chromadb.PersistentClient(
+              path=str(DB_DIR)
+          )
+
+          collection = client.get_collection(
+              name=COLLECTION_NAME
+          )
+
+          assert collection.count() > 0, (
+              "No document chunks indexed."
+          )
+
+          records = collection.get(
+              include=["documents", "metadatas"]
+          )
+
+          assert any(
+              metadata.get("source")
+              == "gassafe_ingestion_test.pdf"
+              for metadata in records["metadatas"]
+          ), "Expected PDF source missing."
+
+          print(
+              "Indexed chunks:",
+              collection.count()
+          )
+
+          print("Source metadata verified.")
+          PY
+
+      - name: Restart application container
+        run: docker compose restart gassafe-ai
+
+      - name: Wait for container after restart
+        run: |
+          for attempt in $(seq 1 30); do
+            STATUS=$(docker inspect \
+              --format='{{.State.Health.Status}}' \
+              gassafe-ai)
+
+            echo "Health after restart: $STATUS"
+
+            if [ "$STATUS" = "healthy" ]; then
+              exit 0
+            fi
+
+            if [ "$STATUS" = "unhealthy" ]; then
+              docker compose logs --tail=100
+              exit 1
+            fi
+
+            sleep 5
+          done
+
+          echo "Container failed to become healthy."
+          exit 1
+
+      - name: Verify index persists after restart
+        run: |
+          docker compose exec -T gassafe-ai \
+            python - <<'PY'
+          import chromadb
+
+          from config import DB_DIR, COLLECTION_NAME
+
+          client = chromadb.PersistentClient(
+              path=str(DB_DIR)
+          )
+
+          collection = client.get_collection(
+              name=COLLECTION_NAME
+          )
+
+          assert collection.count() > 0, (
+              "Index lost after container restart."
+          )
+
+          print(
+              "Persistent chunks:",
+              collection.count()
+          )
+          PY
+
+      - name: Verify semantic retrieval and citations
+        run: |
+          docker compose exec -T gassafe-ai \
+            python - <<'PY'
+          from rag import (
+              load_collection,
+              load_embeddings,
+              extract_passages,
+          )
+
+          question = (
+              "What is the inspection marker?"
+          )
+
+          collection = load_collection()
+          model = load_embeddings()
+
+          embedding = model.encode(
+              [question],
+              normalize_embeddings=True,
+              show_progress_bar=False,
+          ).tolist()
+
+          results = collection.query(
+              query_embeddings=embedding,
+              n_results=1,
+              include=[
+                  "documents",
+                  "metadatas",
+                  "distances",
+              ],
+          )
+
+          context_parts, sources = (
+              extract_passages(results)
+          )
+
+          assert sources, (
+              "No relevant citations returned."
+          )
+
+          assert sources[0]["file"] == (
+              "gassafe_ingestion_test.pdf"
+          ), "Incorrect PDF citation."
+
+          assert sources[0]["page"] == 1, (
+              "Incorrect page citation."
+          )
+
+          assert "BLUE-PINE-742" in (
+              context_parts[0]
+          ), "Expected content not retrieved."
+
+          print("Semantic retrieval passed.")
+
+          print(
+              "Citation:",
+              sources[0]["file"]
+          )
+
+          print(
+              "Page:",
+              sources[0]["page"]
+          )
+
+          print(
+              "Excerpt:",
+              sources[0]["excerpt"]
+          )
+          PY
+
+      - name: Show container status
+        if: always()
+        run: docker compose ps
+
+      - name: Show application logs on failure
+        if: failure()
+        run: docker compose logs --tail=150
+
+      - name: Stop containers
+        if: always()
+        run: docker compose down
+        
