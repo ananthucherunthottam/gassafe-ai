@@ -3,12 +3,12 @@ import logging
 
 import streamlit as st
 
+from config import PDF_DIR, DB_DIR, COLLECTION_NAME
 from rag import ask_gassafe
 
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
 
 st.set_page_config(
     page_title="GasSafe AI",
@@ -17,24 +17,99 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-
 NOT_FOUND = (
-    "I could not find this information in the provided documents."
+    "I could not find this information "
+    "in the provided documents."
 )
 
 GENERAL_ERROR = (
     "GasSafe AI could not process your question. "
-    "Please try again or contact the application administrator."
+    "Please try again."
 )
 
 INDEX_ERROR = (
-    "The gas safety document index is unavailable. "
-    "Please run the PDF ingestion process before asking questions."
+    "The document index is unavailable. "
+    "Please check the application logs."
 )
 
 
+@st.cache_resource(show_spinner=False)
+def initialize_document_index():
+    """
+    Check the existing ChromaDB collection.
+
+    Run the project's existing PDF ingestion
+    process only if the collection is missing
+    or empty.
+    """
+    import chromadb
+
+    pdf_files = (
+        sorted(PDF_DIR.glob("*.pdf"))
+        if PDF_DIR.exists()
+        else []
+    )
+
+    if not pdf_files:
+        raise FileNotFoundError(
+            "No PDF files found in "
+            "data/safety_manuals/"
+        )
+
+    DB_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    client = chromadb.PersistentClient(
+        path=str(DB_DIR)
+    )
+
+    try:
+        collection = client.get_collection(
+            name=COLLECTION_NAME
+        )
+
+        if collection.count() > 0:
+            logger.info(
+                "Existing PDF index is ready."
+            )
+            return True
+
+    except (
+        chromadb.errors.NotFoundError,
+        ValueError,
+    ):
+        logger.info(
+            "No existing PDF index found."
+        )
+
+    logger.info(
+        "Building PDF index from %s files.",
+        len(pdf_files),
+    )
+
+    from ingest import main as ingest_main
+
+    ingest_main()
+
+    collection = client.get_collection(
+        name=COLLECTION_NAME
+    )
+
+    if collection.count() == 0:
+        raise RuntimeError(
+            "PDF ingestion produced an empty index."
+        )
+
+    logger.info(
+        "PDF indexing completed successfully."
+    )
+
+    return True
+
+
 def initialize_session():
-    """Initialize conversation state."""
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
@@ -43,13 +118,11 @@ def initialize_session():
 
 
 def clear_conversation():
-    """Reset conversation history."""
     st.session_state.messages = []
     st.session_state.pending_question = None
 
 
 def display_sources(sources):
-    """Display retrieved PDF references."""
     if not sources:
         return
 
@@ -85,7 +158,8 @@ def display_sources(sources):
                 excerpt = ""
 
             st.markdown(
-                f"**{index}. {filename} — Page {page}**"
+                f"**{index}. {filename} "
+                f"— Page {page}**"
             )
 
             if excerpt.strip():
@@ -98,13 +172,12 @@ def display_sources(sources):
 
 
 def process_question(question):
-    """Run the RAG pipeline and normalize its response."""
     try:
         result = ask_gassafe(question)
 
         if not isinstance(result, dict):
             logger.error(
-                "RAG returned an invalid response type."
+                "Invalid RAG response."
             )
             return GENERAL_ERROR, []
 
@@ -119,69 +192,102 @@ def process_question(question):
         )
 
         if not isinstance(answer, str):
-            answer = GENERAL_ERROR
-            sources = []
+            return GENERAL_ERROR, []
 
         answer = answer.strip()
 
         if not answer:
-            answer = NOT_FOUND
-            sources = []
+            return NOT_FOUND, []
 
         if not isinstance(sources, list):
             sources = []
 
         return answer, sources
 
-    except (
-        FileNotFoundError,
-        ) as error:
+    except FileNotFoundError as error:
         logger.warning(
-            "Document index not found: %s",
+            "Document index missing: %s",
             error,
         )
         return INDEX_ERROR, []
 
     except Exception:
         logger.exception(
-            "GasSafe AI failed to process the question."
+            "Question processing failed."
         )
         return GENERAL_ERROR, []
 
 
 initialize_session()
 
-
 st.title("🛡️ GasSafe AI")
 
 st.caption(
-    "Local AI-powered gas safety document assistant"
+    "AI-powered Gas Safety "
+    "Document Intelligence"
 )
 
 st.info(
-    "GasSafe AI retrieves information from indexed PDF documents. "
-    "AI-generated answers may be incomplete or inaccurate. "
-    "Always verify information against approved safety procedures."
+    "GasSafe AI uses Retrieval-Augmented "
+    "Generation to answer questions "
+    "from indexed PDF documents. "
+    "AI-generated answers may be inaccurate."
 )
 
 st.warning(
-    "For an active gas leak or immediate danger, "
-    "leave the affected area and contact emergency services "
-    "or your gas utility emergency line. "
-    "Do not rely on this chatbot for emergency decisions."
+    "Synthetic demonstration only. "
+    "Not for operational or emergency "
+    "decision-making. For a suspected "
+    "gas leak or immediate danger, "
+    "leave the affected area and contact "
+    "emergency services or your gas "
+    "utility emergency line."
 )
+
+index_ready = False
+
+with st.status(
+    "Initializing document intelligence...",
+    expanded=False,
+) as status:
+    try:
+        index_ready = initialize_document_index()
+
+        status.update(
+            label="Document index ready",
+            state="complete",
+            expanded=False,
+        )
+
+    except Exception:
+        logger.exception(
+            "Document initialization failed."
+        )
+
+        status.update(
+            label="Document initialization failed",
+            state="error",
+            expanded=True,
+        )
+
+        st.error(
+            "Unable to initialize the PDF "
+            "database. Check application logs."
+        )
 
 
 with st.sidebar:
     st.header("About GasSafe AI")
 
     st.write(
-        "GasSafe AI uses Retrieval-Augmented Generation (RAG) "
-        "to answer questions from indexed gas safety PDFs."
+        "GasSafe AI retrieves relevant PDF "
+        "passages and uses a local language "
+        "model to generate answers."
     )
 
     st.markdown(
-        "**Language model:** Qwen2.5-1.5B-Instruct"
+        "**Language model:** "
+        "Qwen2.5-1.5B-Instruct"
     )
 
     st.markdown(
@@ -193,10 +299,15 @@ with st.sidebar:
     )
 
     st.markdown(
-        "**Inference:** Local CPU"
+        "**Inference:** CPU"
     )
 
     st.divider()
+
+    if index_ready:
+        st.success("Document index ready")
+    else:
+        st.error("Document index unavailable")
 
     st.button(
         "🗑️ Clear conversation",
@@ -205,17 +316,23 @@ with st.sidebar:
     )
 
     st.caption(
-        "Documents and model inference remain local "
-        "after required models have been downloaded."
+        "Models may be downloaded when "
+        "first initialized. Free cloud "
+        "hosting resources are limited."
     )
 
 
 st.subheader("Ask a gas safety question")
 
 examples = [
-    "What are common gas pipeline safety hazards?",
-    "What precautions are required before maintenance?",
-    "What does the document say about leak detection?",
+    "What is the inspection reference "
+    "for Blue Pine Segment A?",
+    "Summarize the corrosion "
+    "monitoring record.",
+    "What is the status of maintenance "
+    "work order WO-DEMO-104?",
+    "What information is recorded "
+    "during document review?",
 ]
 
 if not st.session_state.messages:
@@ -226,8 +343,11 @@ if not st.session_state.messages:
             example,
             key=f"example_{index}",
             use_container_width=True,
+            disabled=not index_ready,
         ):
-            st.session_state.pending_question = example
+            st.session_state.pending_question = (
+                example
+            )
 
 
 for message in st.session_state.messages:
@@ -244,14 +364,17 @@ for message in st.session_state.messages:
 
 
 typed_question = st.chat_input(
-    "Ask a question about your safety documents..."
+    "Ask about the synthetic safety PDF...",
+    disabled=not index_ready,
 )
 
-pending_question = st.session_state.pending_question
+pending_question = (
+    st.session_state.pending_question
+)
 
 question = typed_question or pending_question
 
-if question:
+if question and index_ready:
     st.session_state.pending_question = None
 
     question = question.strip()
@@ -267,10 +390,11 @@ if question:
 
         with st.chat_message("assistant"):
             with st.spinner(
-                "Searching safety documents..."
+                "Retrieving documents and "
+                "generating an AI answer..."
             ):
-                answer, sources = process_question(
-                    question
+                answer, sources = (
+                    process_question(question)
                 )
 
             st.markdown(answer)
@@ -282,4 +406,11 @@ if question:
             "content": answer,
             "sources": sources,
         })
-        
+
+
+st.divider()
+
+st.caption(
+    "GasSafe AI | Qwen + MiniLM + ChromaDB "
+    "| Synthetic demonstration"
+)
