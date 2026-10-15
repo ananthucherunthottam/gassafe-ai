@@ -1,0 +1,89 @@
+
+name: GasSafe AI Docker Validation
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  docker-validation:
+    name: Build and validate Docker
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check Docker Compose configuration
+        run: docker compose config --quiet
+
+      - name: Build GasSafe AI Docker image
+        run: docker compose build
+
+      - name: Start GasSafe AI container
+        run: docker compose up -d --no-build
+
+      - name: Wait for Streamlit startup
+        run: |
+          echo "Waiting for Streamlit to start..."
+
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent \
+              http://127.0.0.1:8501/_stcore/health \
+              > /dev/null; then
+
+              echo "Streamlit HTTP health check passed."
+              exit 0
+            fi
+
+            echo "Attempt $attempt/30..."
+            sleep 5
+          done
+
+          echo "Streamlit did not respond in time."
+          docker compose logs --tail=100
+          exit 1
+
+      - name: Check Docker container health
+        run: |
+          echo "Checking Docker container status..."
+
+          for attempt in $(seq 1 20); do
+            STATUS=$(docker inspect \
+              --format='{{.State.Health.Status}}' \
+              gassafe-ai)
+
+            echo "Container health: $STATUS"
+
+            if [ "$STATUS" = "healthy" ]; then
+              echo "Docker health check passed."
+              exit 0
+            fi
+
+            if [ "$STATUS" = "unhealthy" ]; then
+              echo "Container became unhealthy."
+              docker compose logs --tail=100
+              exit 1
+            fi
+
+            sleep 5
+          done
+
+          echo "Container did not become healthy in time."
+          docker compose logs --tail=100
+          exit 1
+
+      - name: Show container status
+        if: always()
+        run: docker compose ps
+
+      - name: Show application logs
+        if: failure()
+        run: docker compose logs --tail=150
+
+      - name: Stop containers
+        if: always()
+        run: docker compose down
+        
