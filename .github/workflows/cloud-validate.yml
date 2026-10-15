@@ -1,0 +1,112 @@
+
+name: GasSafe AI Cloud Docker Validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cloud-validation:
+    name: Build and test cloud container
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build cloud Docker image
+        run: |
+          docker build \
+            -f deploy/huggingface/Dockerfile \
+            -t gassafe-cloud:test \
+            .
+
+      - name: Start cloud container
+        run: |
+          docker run -d \
+            --name gassafe-cloud-test \
+            -p 127.0.0.1:7860:7860 \
+            gassafe-cloud:test
+
+      - name: Wait for application health
+        run: |
+          for attempt in $(seq 1 40); do
+            STATUS=$(docker inspect \
+              --format='{{.State.Health.Status}}' \
+              gassafe-cloud-test)
+
+            echo "Container health: $STATUS"
+
+            if [ "$STATUS" = "healthy" ]; then
+              exit 0
+            fi
+
+            if [ "$STATUS" = "unhealthy" ]; then
+              docker logs gassafe-cloud-test
+              exit 1
+            fi
+
+            sleep 5
+          done
+
+          echo "Cloud container did not become healthy."
+          exit 1
+
+      - name: Verify Streamlit endpoint
+        run: |
+          curl --fail --silent --show-error \
+            http://127.0.0.1:7860/_stcore/health
+
+      - name: Verify non-root execution
+        run: |
+          USER_ID=$(docker exec \
+            gassafe-cloud-test id -u)
+
+          echo "Container UID: $USER_ID"
+
+          test "$USER_ID" != "0"
+
+      - name: Verify writable directories
+        run: |
+          docker exec gassafe-cloud-test \
+            python - <<'PY'
+          from pathlib import Path
+          import tempfile
+
+          paths = [
+              "/app/models",
+              "/app/chroma_db",
+              "/app/data/safety_manuals",
+              "/app/.cache/huggingface",
+          ]
+
+          for name in paths:
+              directory = Path(name)
+
+              assert directory.is_dir(), (
+                  f"Missing directory: {name}"
+              )
+
+              with tempfile.TemporaryFile(
+                  dir=directory
+              ) as test_file:
+                  test_file.write(b"ok")
+
+              print(f"Writable: {name}")
+
+          print("All directories writable.")
+          PY
+
+      - name: Show logs on failure
+        if: failure()
+        run: docker logs gassafe-cloud-test
+
+      - name: Stop test container
+        if: always()
+        run: |
+          docker rm -f gassafe-cloud-test \
+            2>/dev/null || true
+            
