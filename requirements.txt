@@ -1,6 +1,7 @@
-streamlit
-chromadb
-sentence-transformers
-pypdf
-llama-cpp-python
-huggingface-hub
+
+streamlit>=1.35,<2
+chromadb>=0.5,<2
+sentence-transformers>=3,<6
+pypdf>=4,<7
+huggingface-hub>=0.25,<1
+llama-cpp-python>=0.3.2,<0.4
