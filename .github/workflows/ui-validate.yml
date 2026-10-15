@@ -1,0 +1,143 @@
+
+name: GasSafe AI Streamlit UI Validation
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ui-validation:
+    name: Streamlit browser smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate Docker Compose
+        run: docker compose config --quiet
+
+      - name: Build application
+        run: docker compose build
+
+      - name: Start Streamlit
+        run: docker compose up -d --no-build
+
+      - name: Wait for application health
+        run: |
+          for attempt in $(seq 1 40); do
+            STATUS=$(docker compose ps --format json | \
+              python -c '
+          import json, sys
+          text = sys.stdin.read().strip()
+          if not text:
+              print("starting")
+              sys.exit()
+          records = [
+              json.loads(line)
+              for line in text.splitlines()
+          ]
+          print(
+              records[0].get("Health", "starting")
+              if records else "starting"
+          )
+          ')
+
+            echo "Health: $STATUS"
+
+            if [ "$STATUS" = "healthy" ]; then
+              exit 0
+            fi
+
+            sleep 5
+          done
+
+          docker compose logs --tail=100
+          exit 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Playwright
+        run: |
+          python -m pip install playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Run browser smoke test
+        run: |
+          python - <<'PY'
+          from playwright.sync_api import sync_playwright
+
+          with sync_playwright() as playwright:
+              browser = playwright.chromium.launch(
+                  headless=True
+              )
+
+              page = browser.new_page(
+                  viewport={
+                      "width": 1280,
+                      "height": 800,
+                  }
+              )
+
+              errors = []
+
+              page.on(
+                  "pageerror",
+                  lambda error: errors.append(str(error))
+              )
+
+              response = page.goto(
+                  "http://127.0.0.1:8501",
+                  wait_until="domcontentloaded",
+                  timeout=60000,
+              )
+
+              assert response is not None
+              assert response.status == 200
+
+              page.wait_for_selector(
+                  '[data-testid="stApp"]',
+                  timeout=60000,
+              )
+
+              page.wait_for_timeout(5000)
+
+              body = page.locator("body").inner_text()
+
+              assert "GasSafe" in body, (
+                  "GasSafe AI title not found."
+              )
+
+              assert not errors, (
+                  f"Browser errors: {errors}"
+              )
+
+              page.screenshot(
+                  path="gassafe-ui.png",
+                  full_page=True,
+              )
+
+              print("Streamlit browser test passed.")
+
+              browser.close()
+          PY
+
+      - name: Upload browser screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gassafe-ui-screenshot
+          path: gassafe-ui.png
+          if-no-files-found: ignore
+
+      - name: Show container logs on failure
+        if: failure()
+        run: docker compose logs --tail=150
+
+      - name: Stop containers
+        if: always()
+        run: docker compose down
+        
