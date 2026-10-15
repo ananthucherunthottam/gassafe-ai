@@ -1,0 +1,64 @@
+
+name: Diagnose AI Dependencies
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Check AI imports
+        run: |
+          python - <<'PY'
+          import importlib
+          import traceback
+
+          modules = [
+              "streamlit",
+              "chromadb",
+              "sentence_transformers",
+              "pypdf",
+              "llama_cpp",
+              "huggingface_hub",
+              "config",
+              "rag",
+              "ingest",
+              "llm",
+          ]
+
+          failed = False
+
+          for module in modules:
+              print(f"\nChecking {module}...")
+
+              try:
+                  importlib.import_module(module)
+                  print(f"PASS: {module}")
+              except Exception:
+                  failed = True
+                  print(f"FAIL: {module}")
+                  traceback.print_exc()
+
+          if failed:
+              raise SystemExit(
+                  "One or more imports failed."
+              )
+
+          print("\nAll imports passed.")
+          PY
+          
